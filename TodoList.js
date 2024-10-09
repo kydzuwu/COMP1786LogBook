@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useContext } from "react";
 import {
   Platform,
   ScrollView,
@@ -9,9 +9,13 @@ import {
   View,
   Modal,
   Alert,
+  FlatList,
 } from "react-native";
 import Constants from "expo-constants";
 import * as SQLite from "expo-sqlite";
+import { ThemeContext } from './ThemeContext';
+import DropDownPicker from 'react-native-dropdown-picker';
+import { Ionicons } from '@expo/vector-icons';
 
 function openDatabase() {
   if (Platform.OS === "web") {
@@ -26,28 +30,40 @@ function openDatabase() {
 
   const db = SQLite.openDatabaseSync("db.db");
   db.withTransactionSync(() => {
+    // First, create the table if it doesn't exist
     db.runSync(
-      `create table if not exists items (id integer primary key not null, done int, value text);`
+      `CREATE TABLE IF NOT EXISTS items (id INTEGER PRIMARY KEY NOT NULL, done INT, value TEXT);`
     );
+    
+    // Then, check if the category column exists, and add it if it doesn't
+    const result = db.getAllSync("PRAGMA table_info(items);");
+    const categoryColumnExists = result.some(column => column.name === 'category');
+    
+    if (!categoryColumnExists) {
+      db.runSync("ALTER TABLE items ADD COLUMN category TEXT;");
+    }
   });
   return db;
 }
 
 const db = openDatabase();
 
-function Items({ done: doneHeading, onPressItem, onDeleteItem, onEditItem }) {
+function Items({ done: doneHeading, onPressItem, onDeleteItem, onEditItem, theme, filterCategory }) {
   const [items, setItems] = useState(null);
 
   useEffect(() => {
     db.withTransactionSync(() => {
-      setItems(
-        db.getAllSync(
-          `select * from items where done = ?;`,
-          doneHeading ? 1 : 0
-        )
-      );
+      let query = `select * from items where done = ?`;
+      let params = [doneHeading ? 1 : 0];
+      
+      if (filterCategory !== 'All') {
+        query += ` and category = ?`;
+        params.push(filterCategory);
+      }
+      
+      setItems(db.getAllSync(query, params));
     });
-  }, []);
+  }, [doneHeading, filterCategory]);
 
   const heading = doneHeading ? "Completed" : "Todo";
 
@@ -57,59 +73,74 @@ function Items({ done: doneHeading, onPressItem, onDeleteItem, onEditItem }) {
 
   return (
     <View style={styles.sectionContainer}>
-      <Text style={styles.sectionHeading}>{heading}</Text>
-      {items.map(({ id, done, value }) => {
-        return (
-          <View key={id} style={styles.todoItem}>
+      <Text style={[styles.sectionHeading, { color: theme.textColor }]}>{heading}</Text>
+      {items.map(({ id, done, value, category }) => (
+        <View key={id} style={[styles.todoItem, { backgroundColor: theme.cardBackground }]}>
+          <TouchableOpacity
+            onPress={() => onPressItem && onPressItem(id)}
+            style={styles.itemTextContainer}
+          >
+            <Text style={[styles.itemText, done && styles.completedText, { color: theme.textColor }]}>
+              {value}
+            </Text>
+            <Text style={[styles.categoryText, { color: theme.secondaryTextColor }]}>
+              {category}
+            </Text>
+          </TouchableOpacity>
+          <View style={styles.buttonsContainer}>
+            <TouchableOpacity
+              onPress={() => onEditItem(id, value, category)}
+              style={[styles.iconButton, { backgroundColor: theme.editButtonColor }]}
+            >
+              <Ionicons name="pencil" size={18} color={theme.buttonTextColor} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => onDeleteItem && onDeleteItem(id)}
+              style={[styles.iconButton, { backgroundColor: theme.deleteButtonColor }]}
+            >
+              <Ionicons name="trash" size={18} color={theme.buttonTextColor} />
+            </TouchableOpacity>
             <TouchableOpacity
               onPress={() => onPressItem && onPressItem(id)}
-              style={styles.itemTextContainer}
+              style={[styles.iconButton, { backgroundColor: done ? theme.undoButtonColor : theme.completeButtonColor }]}
             >
-              <Text style={[styles.itemText, done && styles.completedText]}>
-                {value}
-              </Text>
+              <Ionicons name={done ? "arrow-undo" : "checkmark"} size={18} color={theme.buttonTextColor} />
             </TouchableOpacity>
-            <View style={styles.buttonsContainer}>
-              <TouchableOpacity
-                onPress={() => onEditItem(id, value)}
-                style={styles.editButton}
-              >
-                <Text style={styles.buttonText}>Edit</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => onDeleteItem && onDeleteItem(id)}
-                style={styles.deleteButton}
-              >
-                <Text style={styles.buttonText}>Delete</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                onPress={() => onPressItem && onPressItem(id)}
-                style={styles.completeButton}
-              >
-                <Text style={styles.buttonText}>{done ? "Undo" : "Complete"}</Text>
-              </TouchableOpacity>
-            </View>
           </View>
-        );
-      })}
+        </View>
+      ))}
     </View>
   );
 }
 
 export default function App() {
+  const { theme, toggleTheme } = useContext(ThemeContext);
   const [text, setText] = useState(null);
+  const [category, setCategory] = useState("Personal");
+  const [filterCategory, setFilterCategory] = useState("All");
   const [forceUpdate, forceUpdateId] = useForceUpdate();
   const [modalVisible, setModalVisible] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
+  const [editingCategory, setEditingCategory] = useState("");
+  const [openCategory, setOpenCategory] = useState(false);
+  const [openFilterCategory, setOpenFilterCategory] = useState(false);
 
-  const add = (text) => {
+  const categories = [
+    { label: "All", value: "All" },
+    { label: "Personal", value: "Personal" },
+    { label: "Work", value: "Work" },
+    { label: "Shopping", value: "Shopping" },
+    { label: "Other", value: "Other" },
+  ];
+
+  const add = (text, category) => {
     if (text === null || text === "") {
       return false;
     }
 
     db.withTransactionSync(() => {
-      db.runSync(`insert into items (done, value) values (0, ?)`, text);
+      db.runSync(`insert into items (done, value, category) values (0, ?, ?)`, [text, category]);
       forceUpdate();
     });
   };
@@ -121,17 +152,18 @@ export default function App() {
     });
   };
 
-  const editItem = (id, newValue) => {
+  const editItem = (id, newValue, newCategory) => {
     db.withTransactionSync(() => {
-      db.runSync(`update items set value = ? where id = ?;`, [newValue, id]);
+      db.runSync(`update items set value = ?, category = ? where id = ?;`, [newValue, newCategory, id]);
       forceUpdate();
     });
   };
 
-  const handleEdit = (id, currentValue) => {
+  const handleEdit = (id, currentValue, currentCategory) => {
     setEditingId(id);
     setEditingText(currentValue);
-    setModalVisible(true); // Show modal
+    setEditingCategory(currentCategory);
+    setModalVisible(true);
   };
 
   const handleSaveEdit = () => {
@@ -139,36 +171,74 @@ export default function App() {
       Alert.alert("Error", "Task cannot be empty.");
       return;
     }
-    editItem(editingId, editingText);
+    editItem(editingId, editingText, editingCategory);
     setModalVisible(false);
     setEditingText("");
+    setEditingCategory("");
     setEditingId(null);
   };
 
   return (
-    <View style={styles.container}>
-      <Text style={styles.heading}>To Do App</Text>
+    <View style={[styles.container, { backgroundColor: theme.backgroundColor }]}>
+      <Text style={[styles.heading, { color: theme.textColor }]}>To Do App</Text>
 
       {Platform.OS === "web" ? (
         <View style={{ flex: 1, justifyContent: "center", alignItems: "center" }}>
-          <Text style={styles.heading}>
+          <Text style={[styles.heading, { color: theme.textColor }]}>
             Expo SQLite is not supported on web!
           </Text>
         </View>
       ) : (
         <>
-          <View style={styles.flexRow}>
+          <View style={styles.inputContainer}>
             <TextInput
               onChangeText={(text) => setText(text)}
               onSubmitEditing={() => {
-                add(text);
+                add(text, category);
                 setText(null);
               }}
               placeholder="What do you need to do?"
-              style={styles.input}
+              placeholderTextColor={theme.placeholderTextColor}
+              style={[styles.input, { color: theme.textColor, backgroundColor: theme.inputBackground }]}
               value={text}
             />
+            <View style={styles.categoryPickerContainer}>
+              <DropDownPicker
+                open={openCategory}
+                value={category}
+                items={categories.filter(cat => cat.value !== 'All')}
+                setOpen={setOpenCategory}
+                setValue={setCategory}
+                style={[styles.categoryPicker, { backgroundColor: theme.inputBackground }]}
+                textStyle={{ color: theme.textColor }}
+                dropDownContainerStyle={{ backgroundColor: theme.inputBackground }}
+              />
+            </View>
+            <TouchableOpacity
+              style={[styles.addButton, { backgroundColor: theme.primaryColor }]}
+              onPress={() => {
+                add(text, category);
+                setText(null);
+              }}
+            >
+              <Ionicons name="add" size={24} color={theme.buttonTextColor} />
+            </TouchableOpacity>
           </View>
+          
+          <View style={styles.filterContainer}>
+            <Text style={[styles.filterLabel, { color: theme.textColor }]}>Filter by category:</Text>
+            <DropDownPicker
+              open={openFilterCategory}
+              value={filterCategory}
+              items={categories}
+              setOpen={setOpenFilterCategory}
+              setValue={setFilterCategory}
+              style={[styles.categoryPicker, { backgroundColor: theme.inputBackground }]}
+              textStyle={{ color: theme.textColor }}
+              dropDownContainerStyle={{ backgroundColor: theme.inputBackground }}
+            />
+          </View>
+
           <ScrollView style={styles.listArea}>
             <Items
               key={`forceupdate-todo-${forceUpdateId}`}
@@ -179,8 +249,10 @@ export default function App() {
                   forceUpdate();
                 })
               }
-              onDeleteItem={deleteItem} // Pass delete function
-              onEditItem={handleEdit} // Pass edit function
+              onDeleteItem={deleteItem}
+              onEditItem={handleEdit}
+              theme={theme}
+              filterCategory={filterCategory}
             />
             <Items
               done
@@ -193,9 +265,10 @@ export default function App() {
               }
               onDeleteItem={deleteItem}
               onEditItem={handleEdit}
+              theme={theme}
+              filterCategory={filterCategory}
             />
           </ScrollView>
-          {/* Modal for Editing */}
           <Modal
             animationType="slide"
             transparent={true}
@@ -205,19 +278,29 @@ export default function App() {
             }}
           >
             <View style={styles.modalContainer}>
-              <View style={styles.modalContent}>
-                <Text style={styles.modalTitle}>Edit Task</Text>
+              <View style={[styles.modalContent, { backgroundColor: theme.backgroundColor }]}>
+                <Text style={[styles.modalTitle, { color: theme.textColor }]}>Edit Task</Text>
                 <TextInput
-                  style={styles.modalInput}
+                  style={[styles.modalInput, { color: theme.textColor, borderColor: theme.primaryColor }]}
                   value={editingText}
                   onChangeText={setEditingText}
+                />
+                <DropDownPicker
+                  open={openCategory}
+                  value={editingCategory}
+                  items={categories}
+                  setOpen={setOpenCategory}
+                  setValue={setEditingCategory}
+                  style={[styles.categoryPicker, { backgroundColor: theme.backgroundColor, borderColor: theme.primaryColor }]}
+                  textStyle={{ color: theme.textColor }}
+                  dropDownContainerStyle={{ backgroundColor: theme.backgroundColor, borderColor: theme.primaryColor }}
                 />
                 <View style={styles.modalButtons}>
                   <TouchableOpacity
                     onPress={handleSaveEdit}
-                    style={styles.saveButton}
+                    style={[styles.saveButton, { backgroundColor: theme.primaryColor }]}
                   >
-                    <Text style={styles.buttonText}>Save</Text>
+                    <Text style={[styles.buttonText, { color: theme.buttonTextColor }]}>Save</Text>
                   </TouchableOpacity>
                   <TouchableOpacity
                     onPress={() => setModalVisible(false)}
@@ -231,6 +314,9 @@ export default function App() {
           </Modal>
         </>
       )}
+      <TouchableOpacity onPress={toggleTheme} style={[styles.themeToggle, { backgroundColor: theme.primaryColor }]}>
+        <Ionicons name={theme.dark ? "sunny" : "moon"} size={24} color={theme.buttonTextColor} />
+      </TouchableOpacity>
     </View>
   );
 }
@@ -243,67 +329,62 @@ function useForceUpdate() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: "#f9f9f9",
-    paddingTop: Constants.statusBarHeight,
+    paddingTop: Constants.statusBarHeight + 10,
+    paddingHorizontal: 20,
   },
   heading: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: "bold",
+    marginBottom: 20,
     textAlign: "center",
-    marginVertical: 20,
-    color: "#333",
   },
-  flexRow: {
+  inputContainer: {
     flexDirection: "row",
+    marginBottom: 20,
     alignItems: "center",
-    marginHorizontal: 16,
-    marginBottom: 10,
   },
   input: {
     flex: 1,
-    height: 48,
-    borderColor: "#6a5acd",
-    borderRadius: 8,
-    borderWidth: 1,
-    paddingHorizontal: 16,
-    backgroundColor: "#ffffff",
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
+    height: 50,
+    borderRadius: 25,
+    paddingHorizontal: 20,
+    fontSize: 16,
+    marginRight: 10,
+  },
+  categoryPickerContainer: {
+    width: 120,
+    marginRight: 10,
+    zIndex: 1000,
+  },
+  categoryPicker: {
+    borderRadius: 25,
+    height: 50,
+  },
+  addButton: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    justifyContent: "center",
+    alignItems: "center",
   },
   listArea: {
-    backgroundColor: "#ffffff",
-    borderRadius: 8,
-    marginHorizontal: 16,
-    paddingVertical: 16,
-    paddingHorizontal: 8,
-    shadowColor: "#000",
-    shadowOffset: {
-      width: 0,
-      height: 2,
-    },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 2,
+    flex: 1,
   },
   sectionContainer: {
-    marginBottom: 16,
+    marginBottom: 20,
   },
   sectionHeading: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: "bold",
-    color: "#333",
+    marginBottom: 10,
   },
   todoItem: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginVertical: 8,
+    marginBottom: 10,
+    padding: 15,
+    borderRadius: 10,
   },
   itemTextContainer: {
     flex: 1,
@@ -313,84 +394,76 @@ const styles = StyleSheet.create({
   },
   completedText: {
     textDecorationLine: "line-through",
-    color: "#888",
+  },
+  categoryText: {
+    fontSize: 12,
+    marginTop: 5,
   },
   buttonsContainer: {
     flexDirection: "row",
+  },
+  iconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: "center",
     alignItems: "center",
+    marginLeft: 8,
   },
-  editButton: {
-    backgroundColor: "#1e90ff", // Blue background for edit button
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    marginHorizontal: 4,
+  filterContainer: {
+    marginBottom: 20,
+    zIndex: 999,
   },
-  deleteButton: {
-    backgroundColor: "#dc143c", // Red background for delete button
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    marginHorizontal: 4,
+  filterLabel: {
+    fontSize: 16,
+    marginBottom: 5,
   },
-  completeButton: {
-    backgroundColor: "#1c9963", // Green background for complete button
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    marginHorizontal: 4,
-  },
-  buttonText: {
-    color: "#ffffff", // White text for buttons
-    fontWeight: "bold",
+  themeToggle: {
+    position: 'absolute',
+    top: Constants.statusBarHeight + 10,
+    right: 20,
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    justifyContent: "center",
+    alignItems: "center",
   },
   modalContainer: {
     flex: 1,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "rgba(0, 0, 0, 0.5)", // Dimmed background
+    backgroundColor: "rgba(0, 0, 0, 0.5)",
   },
   modalContent: {
     width: "80%",
-    backgroundColor: "#ffffff",
-    borderRadius: 8,
+    borderRadius: 10,
     padding: 20,
     alignItems: "center",
-    elevation: 5,
   },
   modalTitle: {
     fontSize: 20,
     fontWeight: "bold",
-    marginBottom: 10,
+    marginBottom: 15,
   },
   modalInput: {
-    height: 40,
-    borderColor: "#6a5acd",
-    borderWidth: 1,
-    borderRadius: 4,
-    paddingHorizontal: 10,
+    height: 50,
+    borderRadius: 25,
+    paddingHorizontal: 20,
     width: "100%",
-    marginBottom: 10,
+    marginBottom: 15,
+    fontSize: 16,
   },
   modalButtons: {
     flexDirection: "row",
     justifyContent: "space-between",
     width: "100%",
   },
-  saveButton: {
-    backgroundColor: "#1c9963",
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
+  modalButton: {
+    borderRadius: 25,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
     flex: 1,
-    marginRight: 8,
-  },
-  cancelButton: {
-    backgroundColor: "#dc143c",
-    borderRadius: 8,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    flex: 1,
+    marginHorizontal: 5,
+    alignItems: "center",
   },
 });
-
